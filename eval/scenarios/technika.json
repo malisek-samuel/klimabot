@@ -1,0 +1,63 @@
+[
+  {
+    "id": "t01_ln_ph_diagram",
+    "author": "owner",
+    "title": "ln p-h diagram a otázka, čo sa deje v horúcom dni",
+    "targets": ["the diagram shown under the explanation", "explanation from show_diagram's result", "back to the sale in one sentence"],
+    "review": "Kolo 1: obrázok ln p-h diagramu pod odpoveďou (pridá ho server), vysvetlenie po krokoch 1→2, 2→3, 3→4, 4→1 z výsledku nástroja, čísla ako orientačné; žiadne názvy nástrojov; na konci jedna otázka na priestor a m². Kolo 2: vyšší kondenzačný tlak, viac práce kompresora, nižšia účinnosť a výkon — z vysvetlenia, bez vymyslených čísel a bez SEER, ktoré nevrátil nástroj.",
+    "expect": {"lead": false, "quote": false, "language": "sk", "must_not_say": ["show_diagram"]},
+    "messages": [
+      "Dobrý deň, som študent strojárstva. Môžete mi poslať ln p-h diagram klimatizácie a vysvetliť, čo sa v ňom deje?",
+      "A čo sa v tom diagrame zmení, keď je vonku 38 stupňov?"
+    ]
+  },
+  {
+    "id": "t02_ako_funguje",
+    "author": "owner",
+    "title": "Laik: ako funguje klimatizácia, potom spálňa",
+    "targets": ["the circuit diagram for a layman", "plain words", "then a normal offer"],
+    "review": "Kolo 1: schéma chladivového okruhu pod odpoveďou, jednoduché vysvetlenie (vnútorná jednotka berie teplo, vonkajšia ho odvádza von, kompresor, kondenzát), bez entalpie a čísel; jedna otázka na priestor. Kolo 2: bežná ponuka dvoch možností s cenou z quote.",
+    "expect": {"lead": false, "quote": true, "language": "sk", "must_not_say": ["show_diagram"]},
+    "messages": [
+      "Ako vlastne funguje klimatizácia? Nikdy som to nepochopil, ako môže chladiť a zároveň kúriť.",
+      "Spálňa, 14 m², chcem niečo tiché."
+    ]
+  },
+  {
+    "id": "t03_zataz_pri_teplotach",
+    "author": "owner",
+    "title": "Chladiaca záťaž pri 30 a 36 °C, podkrovie na juh",
+    "targets": ["the load from calculate at both temperatures", "assumptions said", "the offer still sized by area"],
+    "review": "Kolo 1: záťaž z calculate pri 30 aj 36 °C s tým, čo zákazník povedal (podkrovie, juh, 22 m²), predpoklady jednou vetou; povie, že ponuka sa dimenzuje podľa plochy a veľkosť potvrdí PM pri obhliadke; nepýta sa na izoláciu ani ľudí; ak ponúkne cenu, je z quote. Kolo 2: ponuka dvoch možností s cenou z quote podľa plochy.",
+    "expect": {"lead": false, "quote": true, "language": "sk", "must_not_say": ["aká\\s+je\\s+izolácia", "koľko\\s+ľudí"]},
+    "messages": [
+      "Mám podkrovnú izbu 22 m² s veľkými oknami na juh. Aká je chladiaca záťaž pri 30 a pri 36 stupňoch vonku?",
+      "Dobre, a čo by ste mi tam dali a za koľko?"
+    ]
+  },
+  {
+    "id": "t04_spotreba_a_mraz",
+    "author": "owner",
+    "title": "Po ponuke: spotreba za sezónu a kúrenie pri -18",
+    "targets": ["kWh from calculate with the quoted set's SEER/SCOP", "no euros, no savings", "operating range from the price list"],
+    "review": "Kolo 1: ponuka s cenou z quote. Kolo 2: spotreba v kWh za leto aj zimu z calculate (kód setu z ponuky), predpoklady (referenčná sezóna EÚ) jednou vetou; žiadne eurá za elektrinu ani percentá úspory. Kolo 3: prevádzkový rozsah z cenníka — pri -18 °C podľa rozsahu áno / nie, bez výkonu pri mraze.",
+    "expect": {"lead": false, "quote": true, "language": "sk", "must_not_say": ["ušetríte", "€\\s*(?:ročne|za\\s+rok|mesačne)", "(?:ročne|za\\s+rok|mesačne)[^.\\n]{0,20}€"]},
+    "messages": [
+      "Dobrý deň, potrebujem klímu do obývačky 25 m², hlavne aby bola úsporná. Koľko stojí?",
+      "Koľko kWh spotrebuje tá lacnejšia za leto a koľko keď ňou budem v zime kúriť?",
+      "A bude kúriť aj pri mínus 18?"
+    ]
+  },
+  {
+    "id": "t05_btu_rosny_bod",
+    "author": "owner",
+    "title": "9000 BTU a rosný bod pri vlhkom lete",
+    "targets": ["the conversion from calculate", "the dew point from calculate", "no kW sentence cut"],
+    "review": "Kolo 1: 9000 BTU/h je asi 2,6 kW (z calculate), potom jedna otázka na priestor. Kolo 2: rosný bod z calculate (26 °C, 65 %) a že výparník je studenší, preto klimatizácia odvlhčuje; bez zdravotných tvrdení.",
+    "expect": {"lead": false, "quote": false, "language": "sk", "must_not_say": ["calculate\\b"]},
+    "messages": [
+      "Kamarát má klímu 9000 BTU. Koľko je to v kW?",
+      "A aký je rosný bod, keď je v izbe 26 stupňov a vlhkosť 65 %? Prečo klíma odvlhčuje?"
+    ]
+  }
+]

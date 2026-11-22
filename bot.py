@@ -26,6 +26,8 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from spylls.hunspell import Dictionary as HunspellDictionary
 
+import hvac_calc
+
 # --- Config & paths ---
 
 BOT_DIR = Path(__file__).parent
@@ -91,7 +93,9 @@ KB_DIRS = [
     KNOWLEDGE_DIR / "samsung",
     KNOWLEDGE_DIR / "toshiba",
     KNOWLEDGE_DIR / "montaz",
+    KNOWLEDGE_DIR / "technika",   # diagrams and how an AC works; no products, see TECH_DIR
 ]
+TECH_DIR = KNOWLEDGE_DIR / "technika"
 
 # Category buckets — derived from the path segment a JSON sits in.
 # Used to inject a `Kategória: …` line into each chunk so BM25 can match
@@ -176,6 +180,8 @@ class Session:
         self.turn_claims = None           # (customer message count, [(fact, values)]): false claims in that message
         self.undersize_warned = set()     # quote keys of undersized sets the customer has been told about
         self.turn_prerun = None           # (customer message count, text): the tools code ran for the offer
+        self.turn_diagrams = []           # show_diagram keys of this turn, shown under the reply at its end
+        self.diagrams_shown = set()       # every diagram of the conversation: "v tom diagrame" refers to one of them
 
 
 _current_session = contextvars.ContextVar("klimabot_session")
@@ -731,7 +737,7 @@ def _build_product_index():
     code_fields = ("set", "model", "indoor", "outdoor", "code")  # "code": panels, accessories
 
     for brand_dir in KB_DIRS:
-        if not brand_dir.is_dir() or brand_dir.name == "rules":
+        if not brand_dir.is_dir() or brand_dir in (KNOWLEDGE_DIR / "rules", TECH_DIR):
             continue
         brand = _brand_from_dir(brand_dir.name)
         # Recurse: brand JSONs live in knowledge/samsung/<category>/*.json (and the same for toshiba).
@@ -3894,6 +3900,200 @@ def _segment_guide():
     return "; ".join(lines)
 
 
+# --- Diagrams and calculations ---
+# A customer who wants to understand how an AC works gets a picture and an explanation from the knowledge base
+# (knowledge/technika/diagramy.json, images in web/static/diagrams/); one who wants something worked out gets it
+# from hvac_calc.py, never from the model's head (the owner, 2026-11-22). The load figures are information only: the
+# offer is still sized by sizing_policy.json and the PM confirms the size at the site visit. No euro figures: the
+# price provenance check stays as it is, consumption is in kWh.
+
+DIAGRAMS = {key: value for key, value in json.loads((TECH_DIR / "diagramy.json").read_text(encoding="utf-8")).items()
+            if key != "metadata"}
+DIAGRAM_URL_PREFIX = "/static/"  # web.py serves web/static/
+
+
+def _diagram_card(key):
+    """What the web chat shows under the reply (the `diagram` event): an image, its alt text and a caption."""
+    d = DIAGRAMS[key]
+    return {"key": key, "src": DIAGRAM_URL_PREFIX + d["image"], "title": d["title"], "alt": d["alt"],
+            "caption": d["caption"]}
+
+
+def show_diagram(diagram):
+    """Queue a diagram for this turn's reply and return its explanation for the model."""
+    key = str(diagram or "").strip()
+    if key not in DIAGRAMS:
+        return {"error": f"Neznámy diagram '{key}'. Možnosti: {', '.join(DIAGRAMS)}."}
+    sess = S()
+    if key not in sess.turn_diagrams:
+        sess.turn_diagrams.append(key)
+    sess.diagrams_shown.add(key)
+    d = DIAGRAMS[key]
+    return {"diagram": key, "title": d["title"], "shown_to_customer": True, "explanation": d["explanation"],
+            "how_to_answer": ("Obrázok sa zákazníkovi zobrazí pod tvojou odpoveďou. Nepíš, že ho posielaš, ani "
+                              "názov nástroja. Vysvetli ho po krokoch z `explanation`, jednoducho a stručne; čísla "
+                              "sú orientačné pre R32, nie údaje konkrétneho modelu.")}
+
+
+# Operating ranges of the price lists: per series, per row, or file-wide in `metadata` (Samsung's CAC per refrigerant,
+# keyed by the section name's suffix). Inherited down the tree; a row's own range wins.
+_RANGE_FIELDS = {"cooling": ("operating_range_cooling_C", "operating_range_cool_C", "cooling_C"),
+                 "heating": ("operating_range_heating_C", "operating_range_heat_C", "heating_C"),
+                 "both": ("operating_range_C",)}
+_SIMPLE_RANGE_RE = re.compile(r"\s*[+\-−]?\s*\d+\s*/\s*[+\-−]?\s*\d+\s*")
+
+
+def _ranges_in(node):
+    out = {}
+    for mode, fields in _RANGE_FIELDS.items():
+        for f in fields:
+            if isinstance(node.get(f), str):
+                for m in (("cooling", "heating") if mode == "both" else (mode,)):
+                    out[m] = node[f]
+    return out
+
+
+def _build_operating_ranges():
+    index = {}
+
+    def walk(node, inherited):
+        if isinstance(node, list):
+            for item in node:
+                walk(item, inherited)
+            return
+        if not isinstance(node, dict):
+            return
+        here = {**inherited, **_ranges_in(node)}
+        for field in ("set", "model", "indoor", "outdoor"):
+            for c in re.split(r"[\s+,]+", str(node.get(field) or "")):
+                c = c.strip().upper()
+                if len(c) >= 4 and here:
+                    index.setdefault(c, here)
+        for k, v in node.items():
+            if not k.startswith("_") and k != "metadata" and isinstance(v, (dict, list)):
+                walk(v, here)
+
+    for d in KB_DIRS:
+        if not d.is_dir() or d in (KNOWLEDGE_DIR / "rules", TECH_DIR):
+            continue
+        for jf in sorted(d.rglob("*.json")):
+            if "glossary" in jf.name.lower():
+                continue
+            try:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+            file_wide = _ranges_in(meta)
+            by_suffix = {k[len("operating_range_"):]: _ranges_in(v) for k, v in meta.items()
+                         if k.startswith("operating_range_") and isinstance(v, dict)}
+            for top, value in data.items():
+                if top == "metadata" or top.startswith("_"):
+                    continue
+                suffix = max((sfx for sfx in by_suffix if top.endswith("_" + sfx)), key=len, default=None)
+                walk(value, {**file_wide, **(by_suffix[suffix] if suffix else {})})
+    return index
+
+
+OPERATING_RANGES = _build_operating_ranges()
+
+
+def _catalog_unit(code):
+    """(code, record, specs) of a code the price lists know, accepting a pasted '/EU'-less form."""
+    c = str(code or "").strip().upper()
+    for cand in (c, f"{c}/EU", c.replace("/EU", "")):
+        if cand in PRODUCT_BY_CODE:
+            return cand, PRODUCT_BY_CODE[cand], _code_specs(cand)
+    return None, None, None
+
+
+def calculate(kind, **inp):
+    """The `calculate` tool: hvac_calc.py plus what only the catalog knows (a set's SEER, SCOP, output, operating
+    range). Returns a dict; bad input is {"error": …} so the model can fix the call."""
+    try:
+        if kind == "cooling_load":
+            r = hvac_calc.cooling_load(inp.get("area_m2"), inp.get("outdoor_temps_c"), inp.get("indoor_temp_c"),
+                                       inp.get("height_m"), inp.get("insulation"), inp.get("sun"),
+                                       inp.get("windows_m2"), inp.get("people"), inp.get("appliances_w"),
+                                       bool(inp.get("top_floor")))
+            r["offer_sizing_kW"] = round(r["area_m2"] * SIZING["kw_per_m2"], 2)
+            r["offer_note"] = ("Veľkosť jednotky v ponuke je podľa plochy (offer_sizing_kW), nie podľa tohto výpočtu; "
+                               "presnú veľkosť potvrdí projektový manažér pri bezplatnej obhliadke.")
+            return r
+        if kind == "heating_load":
+            r = hvac_calc.heating_load(inp.get("area_m2"), inp.get("outdoor_temps_c"), inp.get("indoor_temp_c"),
+                                       inp.get("height_m"), inp.get("insulation"), bool(inp.get("top_floor")))
+            r["offer_note"] = ("Ponuka sa dimenzuje podľa plochy na chladenie; či set pri mraze stačí aj na "
+                               "kúrenie, posúdi projektový manažér pri obhliadke.")
+            return r
+        if kind == "energy_use":
+            seer, scop = inp.get("seer"), inp.get("scop")
+            cool, heat = inp.get("cooling_load_kw"), inp.get("heating_load_kw")
+            source = None
+            if inp.get("code"):
+                code, rec, specs = _catalog_unit(inp["code"])
+                if not rec:
+                    return {"error": f"Kód {inp['code']} v cenníkoch nie je; over ho cez lookup_product."}
+                seer = seer or specs.get("SEER")
+                scop = scop or specs.get("SCOP")
+                mode = inp.get("mode") or "both"
+                if cool in (None, "") and mode in ("cooling", "both"):
+                    cool = rec.get("cooling_kW")
+                if heat in (None, "") and mode in ("heating", "both"):
+                    heat = rec.get("heating_kW")
+                source = {"code": code, "brand": rec["brand"], "series": rec["category_path"], "SEER": seer,
+                          "SCOP": scop, "cooling_kW": rec.get("cooling_kW"), "heating_kW": rec.get("heating_kW")}
+                if cool in (None, "") and heat in (None, ""):
+                    return {"error": f"Pri kóde {code} cenník neuvádza výkon; zadaj cooling_load_kw alebo heating_load_kw."}
+                if (cool not in (None, "") and not seer) or (heat not in (None, "") and not scop):
+                    return {"error": f"Pri kóde {code} cenník neuvádza SEER alebo SCOP; spotrebu z neho nevypočítam.",
+                            "catalog": source}
+            r = hvac_calc.energy_use(cool, heat, seer, scop, inp.get("cooling_hours"), inp.get("heating_hours"),
+                                     inp.get("hours_per_day"), inp.get("cooling_days"), inp.get("heating_days"),
+                                     inp.get("load_ratio"))
+            if source:
+                r["catalog"] = source
+                if inp.get("cooling_load_kw") in (None, "") or inp.get("heating_load_kw") in (None, ""):
+                    r["assumed"].append("plný výkon = menovitý výkon setu z cenníka (horný odhad; pri nižšej "
+                                        "záťaži miestnosti je spotreba menšia)")
+            return r
+        if kind == "operating_range":
+            code, rec, _ = _catalog_unit(inp.get("code"))
+            if not rec:
+                return {"error": "Zadaj kód vonkajšej jednotky alebo setu (cez lookup_product)."}
+            temp = inp.get("outdoor_temp_c")
+            if isinstance(temp, list):
+                temp = temp[0] if temp else None
+            t = float(str(temp).replace(",", ".")) if temp not in (None, "") else None
+            if t is None:
+                return {"error": "Chýba vonkajšia teplota (outdoor_temp_c)."}
+            mode = inp.get("mode") or ("heating" if t < 10 else "cooling")
+            ranges = OPERATING_RANGES.get(code, {})
+            text = ranges.get(mode)
+            if not text:
+                return {"code": code, "mode": mode, "range_text": None,
+                        "note": ("Cenník pri tomto kóde rozsah vonkajších teplôt neuvádza (pri multi-split ho určuje "
+                                 "vonkajšia jednotka). Netvrď nič; over kód vonkajšej jednotky.")}
+            pair = hvac_calc.parse_range(text)
+            if not _SIMPLE_RANGE_RE.fullmatch(text) or not pair:
+                return {"code": code, "mode": mode, "outdoor_temp_C": t, "range_text": text, "within_range": None,
+                        "note": "Rozsah má v cenníku podmienky: povedz ho presne podľa range_text, nič nedopočítavaj."}
+            r = hvac_calc.operating_range(t, pair[0], pair[1], mode)
+            return {**r, "code": code, "brand": rec["brand"], "series": rec["category_path"], "range_text": text}
+        if kind == "convert":
+            return hvac_calc.convert(inp.get("value"), inp.get("unit"))
+        if kind == "dew_point":
+            return hvac_calc.dew_point(inp.get("temp_c"), inp.get("rh_pct"), inp.get("surface_temp_c"))
+        return {"error": f"Neznámy výpočet '{kind}'. Možnosti: {', '.join(CALC_KINDS)}."}
+    except (hvac_calc.CalcError, ValueError, TypeError) as e:
+        return {"error": f"Výpočet sa nedá urobiť: {e}"}
+
+
+CALC_KINDS = ("cooling_load", "heating_load", "energy_use", "operating_range", "convert", "dew_point")
+
+
 # search_knowledge is defined after the retrieval pipeline below.
 
 tools = [
@@ -4202,6 +4402,74 @@ tools = [
                 },
             },
             "required": ["name", "contact", "summary"],
+        },
+    },
+    {
+        "name": "show_diagram",
+        "description": (
+            "IBA keď zákazník sám chce diagram alebo vysvetlenie, ako klimatizácia funguje (inak ho server odmietne). "
+            "Ukáže zákazníkovi obrázok pod tvojou odpoveďou a vráti jeho vysvetlenie. `ln_ph`: ln p-h (log p-h, "
+            "Mollierov) diagram chladiva R32 s chladiacim cyklom — keď sa pýta na tento diagram, na obeh "
+            "chladiva alebo ako funguje klimatizácia či tepelné čerpadlo. `chladivovy_okruh`: schéma jednotiek, "
+            "kompresora, kondenzátora, expanzného ventilu, výparníka a potrubia. Vysvetľuj iba z výsledku."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"diagram": {"type": "string", "enum": list(DIAGRAMS)}},
+            "required": ["diagram"],
+        },
+    },
+    {
+        "name": "calculate",
+        "description": (
+            "IBA keď zákazník sám chce niečo vypočítať (inak ho server odmietne); nikdy ho neponúkaj ani nepoužívaj "
+            "na vlastnú iniciatívu. Orientačné výpočty pre zákazníka; každé číslo, ktoré vypočítaš, musí byť z tohto nástroja. "
+            "`cooling_load`: chladiaca záťaž miestnosti pri vonkajších teplotách (area_m2, outdoor_temps_c, voliteľne "
+            "insulation, sun, top_floor, people, appliances_w, windows_m2, height_m, indoor_temp_c). `heating_load`: "
+            "tepelná strata pri mraze (area_m2, outdoor_temps_c, insulation, top_floor). `energy_use`: spotreba "
+            "elektriny v kWh za sezónu — `code` setu (SEER/SCOP a výkon doplní server) alebo cooling_load_kw / "
+            "heating_load_kw so seer / scop; hodiny: cooling_hours / heating_hours (hodiny plného výkonu) alebo "
+            "hours_per_day s cooling_days / heating_days. `operating_range`: či set beží pri vonkajšej teplote (code, "
+            "outdoor_temp_c, mode). `convert`: kW ↔ BTU/h (value, unit). `dew_point`: rosný bod (temp_c, rh_pct, "
+            "voliteľne surface_temp_c). Vyplň iba to, čo zákazník povedal; zvyšok je predpoklad v `assumed` — povedz "
+            "ho. Záťaž je iba informácia: veľkosť v ponuke je podľa plochy (`offer_sizing_kW`). Žiadne eurá."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": list(CALC_KINDS)},
+                "area_m2": {"type": "number"},
+                "outdoor_temps_c": {"type": "array", "items": {"type": "number"},
+                                    "description": "Vonkajšie teploty v °C (najviac 8); pri operating_range jedna."},
+                "outdoor_temp_c": {"type": "number"},
+                "indoor_temp_c": {"type": "number"},
+                "height_m": {"type": "number"},
+                "insulation": {"type": "string", "enum": ["dobra", "priemerna", "slaba"]},
+                "sun": {"type": "string", "enum": ["tien", "bezne", "silne"],
+                        "description": "silne = juh/západ s veľkými oknami, tien = sever alebo tieň."},
+                "top_floor": {"type": "boolean", "description": "Podkrovie alebo posledné poschodie pod strechou."},
+                "people": {"type": "integer"},
+                "appliances_w": {"type": "number", "description": "Spotrebiče v miestnosti vo W (počítač, TV…)."},
+                "windows_m2": {"type": "number"},
+                "code": {"type": "string", "description": "Kód jednotky alebo setu z cenníka."},
+                "mode": {"type": "string", "enum": ["cooling", "heating", "both"]},
+                "cooling_load_kw": {"type": "number"},
+                "heating_load_kw": {"type": "number"},
+                "seer": {"type": "number"},
+                "scop": {"type": "number"},
+                "cooling_hours": {"type": "number"},
+                "heating_hours": {"type": "number"},
+                "hours_per_day": {"type": "number", "description": "Iba ak ho zákazník povedal; inak nevypĺňaj "
+                                  "(platí referenčná sezóna EÚ)."},
+                "cooling_days": {"type": "number", "description": "Iba ak ich zákazník povedal."},
+                "heating_days": {"type": "number", "description": "Iba ak ich zákazník povedal."},
+                "value": {"type": "number"},
+                "unit": {"type": "string", "enum": ["kW", "BTU"]},
+                "temp_c": {"type": "number"},
+                "rh_pct": {"type": "number"},
+                "surface_temp_c": {"type": "number"},
+            },
+            "required": ["kind"],
         },
     },
 ]
@@ -4577,6 +4845,19 @@ def dispatch_tool(name, inp):
         if name == "compare_products":
             result = compare_products(inp["model_codes"])
             return json.dumps(result, ensure_ascii=False), "error" in result
+        if name in ("show_diagram", "calculate") and not any(_technical_ask(_latest_customer_message())):
+            # Only when the customer asks (the owner, 2026-11-22): a picture or a calculation nobody asked for is refused,
+            # and the model answers without it.
+            log_event("limit_hit", limit="technical_not_asked", tool=name)
+            return ("Zákazník sa na diagram ani výpočet v poslednej správe nepýtal: nepoužívaj ho a odpovedz bez neho. "
+                    "Diagram a výpočty iba vtedy, keď o ne zákazník sám požiada."), True
+        if name == "show_diagram":
+            result = show_diagram(inp.get("diagram"))
+            return json.dumps(result, ensure_ascii=False), "error" in result
+        if name == "calculate":
+            args = {k: v for k, v in inp.items() if k != "kind"}
+            result = calculate(inp.get("kind"), **args)
+            return json.dumps(result, ensure_ascii=False), "error" in result
         if name == "request_human_handoff":
             result = request_human_handoff(
                 inp["reason"], inp["customer_question"], inp.get("urgency", "normal"), inp.get("purpose")
@@ -4950,8 +5231,20 @@ _HEALTH_CLAIM_OK_RE = re.compile(r"\blekár(?!sk)\w*|\bpediatr\w*|\bnesľub\w*|\
                                  re.IGNORECASE)
 
 
+# "Kvapalina sa ešte o 5 K podchladí" is the refrigerant's subcooling, not a chill (the ln p-h explanation, eval of
+# 2026-11-22: zdravie-tvrdenie rewrote a correct step).
+_SUBCOOLING_RE = re.compile(r"\bpodchlad\w*", re.IGNORECASE)
+_REFRIGERANT_CONTEXT_RE = re.compile(r"\bkvapalin\w*|\bchladiv\w*|\bkondenz\w*|\bvýparník\w*|\bkompresor\w*|\bentalp\w*|"
+                                     r"\d\s*K\b", re.IGNORECASE)
+
+
 def _health_claim_sentences(text):
-    return [s for s in _sentences(text) if _HEALTH_CLAIM_RE.search(s) and not _HEALTH_CLAIM_OK_RE.search(s)]
+    out = []
+    for s in _sentences(text):
+        checked = _SUBCOOLING_RE.sub(" ", s) if _REFRIGERANT_CONTEXT_RE.search(s) else s
+        if _HEALTH_CLAIM_RE.search(checked) and not _HEALTH_CLAIM_OK_RE.search(s):
+            out.append(s)
+    return out
 
 
 _FREE_REPAIR_RE = re.compile(
@@ -7396,7 +7689,8 @@ MAX_REGENS_PER_TURN = 2
 # Internal instructions, tool names or the bot's own reasoning shown to the customer
 # (a03: "Čakám na zákazníkovu odpoveď… nemôžem volať `quote`").
 _INTERNAL_LEAK_RE = re.compile(
-    r"\b(?:search_knowledge|lookup_product|update_customer_state|capture_lead|request_human_handoff|"
+    r"\b(?:search_knowledge|lookup_product|update_customer_state|capture_lead|request_human_handoff|show_diagram|"
+    r"offer_sizing_kW|"
     r"check_compatibility|compare_products|get_current_time|customer_state|tool_result|tool_use|"
     r"consent_given|consent_purpose|budget_eur|all_in_estimate|installation_estimate|cheaper_alternative)\b|"
     # talking about the customer in the third person = the bot's own reasoning (a05)
@@ -10100,12 +10394,114 @@ def _policy_move():
                     "to; telefón alebo e-mail stačí, ten druhý ani obec si nepýtaj. Keď ich máš, zavolaj `capture_lead` a "
                     "krátko poďakuj.", None)
     sales = _with_budget_requote(_with_questions(_sales_move(latest), latest), latest)
+    sales = _technika_move(latest, sales) or sales
     decline = _decline_text(latest)
     if decline:
         # The sale's prerun stays: its directive says the server priced the options (a decline dropped them).
         return Move("neponukame", f"{decline} Potom: {sales.directive}", sales.tool_choice if sales.prerun else None,
                     sales.prerun)
     return sales
+
+
+# How an AC works and what can be worked out (folded text). Narrow on purpose: "ako funguje WindFree" is a feature
+# question for lookup_product, and "koľko stojí" a price.
+_LN_PH_ASK_RE = re.compile(
+    r"\bln\s*-?\s*p\s*-?\s*h\b|\blog\s*p\s*-?\s*h\b|\bp\s*-\s*h\s+diagram\w*|\bmollier\w*|\bentalp\w*|"
+    r"\bchladiac\w*\s+(?:cykl\w*|obeh\w*)|\bobeh\w*\s+chladiv\w*|\bcyklus\w*\s+chladiv\w*|\bcarnot\w*", re.IGNORECASE)
+_CIRCUIT_ASK_RE = re.compile(
+    r"\bchladivov\w*\s+okruh\w*|\bako\s+(?:to\s+)?(?:vlastne\s+|presne\s+)?funguj\w*\s+(?:\w+\s+){0,2}(?:klim\w*|tepeln\w*\s+"
+    r"cerpad\w*|kompresor\w*|chladeni\w*|split\w*)|\bprincip\w*\s+(?:\w+\s+)?(?:klim\w*|chladeni\w*|tepeln\w*\s+cerpad\w*)|"
+    r"\b(?:schem\w*|nakresl\w*)\b[^.?!\n]{0,40}\b(?:klim\w*|jednot\w*|okruh\w*|chladeni\w*)|"
+    r"\bhow\s+(?:does\s+)?(?:an?\s+)?(?:air\s+conditioner|ac|heat\s+pump)\s+works?\b", re.IGNORECASE)
+# "obrázok" alone is a product photo, which the bot doesn't have.
+_DIAGRAM_ASK_RE = re.compile(r"\b(?:diagram\w*|schem\w*|nakresl\w*)\b", re.IGNORECASE)
+_CALC_ASK_RE = re.compile(
+    r"\b(?:chladiac\w*|tepeln\w*)\s+(?:zataz\w*|strat\w*)|\btepeln\w*\s+zisk\w*|\bvypocit\w*|\bprepocit\w*\s+(?:na\s+)?"
+    r"(?:btu|kw)\b|\bbtu\b|\bkwh\b|\bspotreb(?:a|y|e|u|ou|uje|ujem|uju|ovat|ovala?)\b|\bminie\b|\bzozerie\b|\brosn\w*\s+bod\w*|\bprevadzk\w*\s+(?:rozsah\w*|"
+    r"teplot\w*)|\bpri\s+(?:[+-]|minus\s+)?\d{1,2}\s*(?:°|stup\w*|c\b)|\bpri\s+(?:-|−|minus\s+)\d{1,2}\b|\bpri\s+mraz\w*|"
+    r"\bv\s+mrazoch\b|"
+    r"\b(?:do|pod)\s+(?:minus\s+|-)\d{1,2}\b", re.IGNORECASE)
+
+
+def _technical_ask(latest):
+    """(diagram keys to show, whether a calculation is asked for, whether it asks about a diagram already shown) of the
+    customer's latest message."""
+    folded = fold_diacritics(latest)
+    shown = S().diagrams_shown
+    keys = []
+    if _LN_PH_ASK_RE.search(folded):
+        keys.append("ln_ph")
+    # "A čo sa v tom diagrame zmení…" asks about the one on screen (the eval of 2026-11-22 got the circuit instead).
+    followup = bool(shown and _DIAGRAM_ASK_RE.search(folded) and not keys and not _CIRCUIT_ASK_RE.search(folded)
+                    and not re.search(r"\b(?:in\w*|dals\w*|druh\w*|nov\w*)\s+(?:diagram|schem|nakres)", folded))
+    if _CIRCUIT_ASK_RE.search(folded) or (not keys and not followup and _DIAGRAM_ASK_RE.search(folded)
+                                          and not _CALC_ASK_RE.search(folded)):
+        keys.append("chladivovy_okruh")
+    # "Koľko stojí pri 35 stupňoch?" is a price; "koľko spotrebuje" isn't.
+    calc = bool(_CALC_ASK_RE.search(folded)) and not (_PRICE_QUESTION_RE.search(latest)
+                                                       and not re.search(r"spotreb|kwh", folded))
+    return keys, calc, followup and not keys
+
+
+def _latest_customer_message():
+    return S().user_inputs[-1] if S().user_inputs else ""
+
+
+def _asks_new_variant_besides_calc(latest):
+    """After an offer, whether the message asks for another variant once its consumption question is blanked:
+    "Koľko kWh spotrebuje tá lacnejšia… a koľko, keď budem kúriť?" was nova-ponuka (the "koľko … bude" of a price)
+    and the gate regenerated it twice for a quote nobody asked for (eval of 2026-11-22)."""
+    folded = fold_diacritics(latest)
+    if not re.search(r"spotreb|kwh|\bminie\b|\bzozerie\b", folded):
+        return True
+    rest = " ".join(x for x in re.split(r"(?<=[.?!])\s+", folded) if not re.search(r"spotreb|kwh|minie|zozerie", x))
+    rest = re.sub(r"\bkolko\b[^?.!\n]*", " ", rest)
+    return bool(_NEW_VARIANT_RE.search(rest) or _codes_named(rest) or _SERIES_NAMED_RE.search(rest))
+
+
+def _technika_move(latest, sales):
+    """A diagram or a calculation asked for: code shows the diagram (prerun) and the reply explains it; a calculation
+    goes through `calculate`. An offer due now still comes with it (the sale's directive and prerun stay)."""
+    keys, calc, followup = _technical_ask(latest)
+    if not keys and not calc and not followup:
+        return None
+    sess = S()
+    parts = []
+    if keys:
+        parts.append("Zákazník chce pochopiť, ako klimatizácia funguje: server mu pod odpoveď pridal obrázok "
+                     "(VÝSLEDKY SERVERA nižšie, `show_diagram`). Vysvetli ho po krokoch z `explanation` — jednoducho, "
+                     "najviac päť krátkych odsekov alebo bodov, bez nadpisov; môžeš napísať, že obrázok je pod "
+                     "odpoveďou. Čísla ber iba z vysvetlenia a povedz, že sú orientačné, nie údaje konkrétneho modelu.")
+    if followup:
+        parts.append("Zákazník sa pýta na diagram, ktorý už dostal: odpovedz z jeho vysvetlenia (výsledok "
+                     "`show_diagram` vyššie v rozhovore), stručne a vecne; čísla, ktoré tam nie sú, nevymýšľaj a "
+                     "obrázok znova neposielaj.")
+    if calc:
+        parts.append("Zákazník chce niečo vypočítať (záťaž pri teplotách, tepelnú stratu, spotrebu, prevádzkový "
+                     "rozsah, BTU, rosný bod): zavolaj `calculate` iba s údajmi, ktoré povedal (kód setu z ponuky "
+                     "alebo z `lookup_product`), a uveď výsledok aj predpoklady z `assumed` jednou vetou. Na izoláciu, "
+                     "oslnenie, ľudí ani výšku stropu sa nepýtaj, tie sú predpokladom; ak pri záťaži chýba plocha, "
+                     "opýtaj sa iba na ňu. Pri záťaži povedz, že ponuka sa dimenzuje podľa plochy a presnú veľkosť "
+                     "potvrdí projektový manažér pri obhliadke. Spotrebu uvádzaj iba v kWh; eurá, percentá ani "
+                     "úsporu nie.")
+    prerun = tuple(("show_diagram", {"diagram": k}) for k in keys)
+    if sales.name == "ponuka" or (sales.name == "nova-ponuka" and _asks_new_variant_besides_calc(latest)):
+        return Move(sales.name, sales.directive + " Okrem toho: " + " ".join(parts),
+                    sales.tool_choice, sales.prerun + prerun)
+    previous = _previous_reply()
+    if sess.quotes:
+        then = " Potom jednou vetou nadviaž na nacenené možnosti."
+    elif _size_known():
+        then = " Potom jednou vetou ponúkni, že pripravíš cenovú ponuku."
+    elif re.search(r"\bm²|\bm2\b|\bpriestor\w*", previous, re.IGNORECASE):
+        # The eval of 2026-11-22: the same question closed every technical answer.
+        then = " Na priestor ani m² sa znova nepýtaj, to si sa už pýtal; nanajvýš jednou vetou ponúkni pomoc s výberom."
+    else:
+        then = " Potom sa jednou otázkou opýtaj, aký priestor chce chladiť a koľko má m²."
+    then = " Odpovedz iba na to, na čo sa pýta teraz; čo si už povedal, neopakuj." + then
+    inputs_known = bool(_customer_m2() or sess.quotes or re.search(r"\d", latest))
+    return Move("technika", " ".join(parts) + then + _NO_CONTACT_YET,
+                "any" if calc and inputs_known else None, prerun)
 
 
 def _with_budget_requote(move, latest):
@@ -10767,6 +11163,7 @@ def run_user_turn_streaming(user_input):
         yield ("state", dict(sess.customer_state))
     language = _session_language()
     quotes_before = sess.turn_quotes_start = len(sess.quotes)
+    sess.turn_diagrams = []
     _close_complaint_for_sale()
     # The message joins the history before the policy reads it: _previous_reply() during next_move() returned the reply
     # before the last one, so the priorities question the bot had just asked was never seen (A/B of 2026-11-09).
@@ -11497,6 +11894,11 @@ def run_user_turn_streaming(user_input):
     # A price card for every quote of this turn that the reply states, then the consent buttons.
     for q in _quotes_in_reply(sess.quotes[quotes_before:], "\n".join(shown_this_turn)):
         yield ("quote", _quote_card(q, _session_language()))
+    # The diagrams show_diagram queued this turn, under the reply that explains them.
+    if shown_this_turn:
+        for key in sess.turn_diagrams:
+            log_event("diagram_shown", diagram=key)
+            yield ("diagram", _diagram_card(key))
     if asked:
         yield ("quick_replies", {"kind": "consent", "options": CONSENT_QUICK_REPLIES[_session_language()]})
 
@@ -11565,6 +11967,8 @@ def _run_cli_repl():
                 if len(inp_brief) > 120:
                     inp_brief = inp_brief[:117] + "..."
                 print(f"[tool: {data['name']}({inp_brief})]")
+            elif event_name == "diagram":
+                print(f"[diagram: {data['title']} → web/static/{data['src'].removeprefix(DIAGRAM_URL_PREFIX)}]")
             elif event_name == "error":
                 print(f"\n[{data['message']} Skús znova alebo napíš 'bye'.]")
 

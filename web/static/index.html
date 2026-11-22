@@ -432,6 +432,18 @@
     .qc-notes { list-style: none; margin: 0; padding: 12px 18px 4px; font-size: 12.5px; color: var(--text-3); display: grid; gap: 3px; }
     .qc-foot { display: flex; justify-content: flex-end; padding: 8px 18px 16px; }
 
+    /* Diagram card: a picture show_diagram queued, under the reply that explains it */
+    .diagram-card {
+      position: relative; width: min(100%, 640px); margin: 0; border-radius: 18px; overflow: hidden;
+      background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+    }
+    .diagram-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--grad-brand); }
+    .diagram-card .dc-img { display: block; padding: 12px 12px 0; }
+    .diagram-card img { display: block; width: 100%; height: auto; border-radius: 10px; background: #fff; border: 1px solid var(--border); }
+    .diagram-card figcaption { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; padding: 10px 16px 14px; font-size: 13px; color: var(--text-2); }
+    .diagram-card .dc-title { font-weight: 700; color: var(--text); }
+    .diagram-card .dc-open { color: var(--accent-text); font-weight: 600; white-space: nowrap; }
+
     /* "Preparing the reply": a spinning ring round the avatar and a shimmer over the step it is on */
     .typing .bubble { display: inline-flex; align-items: center; gap: 11px; color: var(--text-3); font-size: 13.5px; font-weight: 500; }
     .typing .avatar::before {
@@ -833,6 +845,8 @@ const TOOL_LABELS = {
   update_customer_state: "Zapisujem si poznámky…",
   capture_lead: "Pripravujem zápis pre projektového manažéra…",
   request_human_handoff: "Odovzdávam požiadavku kolegom…",
+  show_diagram: "Pripravujem obrázok…",
+  calculate: "Počítam…",
 };
 const EMPTY_STATE_HTML =
   `<div class="empty-state"><div class="icon">${ICONS.notes}</div><h3>Zatiaľ bez poznámok</h3>` +
@@ -1145,6 +1159,35 @@ function addQuoteCard(card) {
   row.append(spacer, el);
   append(row);
 }
+// ----- Diagram card ----------------------------------------------------------------------
+// The image is one of the app's own files (web/static/diagrams/), named by the server; built with textContent.
+function addDiagramCard(d) {
+  if (!d || typeof d.src !== "string" || !d.src.startsWith("/static/diagrams/")) return;
+  const fig = h("figure", "diagram-card");
+  const link = h("a", "dc-img");
+  link.href = d.src;
+  link.target = "_blank";
+  link.rel = "noopener";
+  const img = h("img");
+  img.src = d.src;
+  img.alt = d.alt || d.title || "";
+  img.addEventListener("load", () => { if (nearBottom()) scrollToBottom(); });
+  link.appendChild(img);
+  const cap = h("figcaption");
+  const text = h("span");
+  text.append(h("span", "dc-title", d.title || ""), d.caption ? ` – ${d.caption}` : "");
+  const open = h("a", "dc-open", "Otvoriť vo väčšom");
+  open.href = d.src;
+  open.target = "_blank";
+  open.rel = "noopener";
+  cap.append(text, open);
+  fig.append(link, cap);
+  const row = h("div", "row bot card-row");
+  const spacer = h("div", "avatar ghost");
+  spacer.setAttribute("aria-hidden", "true");
+  row.append(spacer, fig);
+  append(row);
+}
 function appendBotText(bubble, text) {
   bubble.dataset.raw = (bubble.dataset.raw || "") + text;
   setMarkdown(bubble, bubble.dataset.raw);
@@ -1455,6 +1498,9 @@ function handleEvent(event, data) {
       break;
     case "quote":
       addQuoteCard(data);
+      break;
+    case "diagram":
+      addDiagramCard(data);
       break;
     case "quick_replies":
       showQuickReplies(data);

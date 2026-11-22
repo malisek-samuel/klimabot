@@ -114,7 +114,7 @@ END_GRACE_SECONDS = 20
 SWEEP_SECONDS = 5
 MAX_TRANSCRIPT_EVENTS = 1_500        # what /api/history replays after a reload
 # Events a reloaded page needs to rebuild the conversation (state and sidebars included).
-TRANSCRIPT_EVENTS = {"token", "notice", "tool_call", "tool_result", "state", "handoff", "quote",
+TRANSCRIPT_EVENTS = {"token", "notice", "tool_call", "tool_result", "state", "handoff", "quote", "diagram",
                      "quick_replies", "turn_complete", "error"}
 # /admin (the cost report) is off unless a token is set; the login is any user name + this password.
 ADMIN_TOKEN = os.getenv("KLIMABOT_ADMIN_TOKEN", "").strip()

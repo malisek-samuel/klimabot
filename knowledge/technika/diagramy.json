@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "purpose": "Diagramy, ktoré bot vie poslať do chatu nástrojom show_diagram, a ich vysvetlenie pre zákazníka. Obrázky sú vo web/static/diagrams/; ln p-h diagram kreslí docs/diagrams/make_ln_ph_diagram.py z údajov R32 (CoolProp) a čísla nižšie musia sedieť s ním.",
+    "last_updated": "2026-11-22"
+  },
+  "ln_ph": {
+    "title": "ln p-h diagram chladiva R32 – chladiaci cyklus",
+    "image": "diagrams/ln_ph_r32.svg",
+    "alt": "ln p-h diagram chladiva R32: kopula medze sýtosti s kritickým bodom a chladiaci cyklus 1→2 kompresia, 2→3 kondenzácia, 3→4 škrtenie, 4→1 vyparovanie medzi nízkym tlakom 9,5 bar a vysokým tlakom 27,9 bar.",
+    "caption": "vyparovanie 5 °C, kondenzácia 45 °C; orientačné podmienky, nie konkrétny model.",
+    "keywords": "ln p-h diagram, log p-h, Mollierov diagram chladiva, entalpia, chladiaci cyklus, obeh chladiva, ako funguje klimatizácia, tepelné čerpadlo princíp",
+    "explanation": [
+      "Čo diagram ukazuje: na zvislej osi je tlak chladiva v logaritmickej mierke (aby sa nízky aj vysoký tlak zmestili do jedného obrázka), na vodorovnej osi merná entalpia – koľko energie nesie 1 kg chladiva, v kJ/kg. Rozdiel entalpií medzi dvoma bodmi je teplo alebo práca, ktorú kilogram chladiva v tom kroku prijme či odovzdá.",
+      "Kopula (medza sýtosti): naľavo od nej je chladivo kvapalné, pod ňou je mokrá para (zmes kvapaliny a pary, ktorá sa práve vyparuje alebo kondenzuje pri stálej teplote), napravo prehriata para. Navrchu je kritický bod R32 (asi 78 °C a 58 bar), nad ním sa kvapalina a para už nedajú rozlíšiť.",
+      "1→2 kompresia (kompresor vo vonkajšej jednotke): kompresor nasáva studenú paru s nízkym tlakom asi 9,5 bar a stláča ju na asi 27,9 bar. Para sa pritom zohreje, na výtlaku má okolo 95 °C. Elektrina, ktorú kompresor spotrebuje, sa mení na prácu w = h2 − h1, v obrázku asi 64 kJ/kg. Ideálny kompresor by išiel po izoentrope (bodkovaná čiara); skutočný má straty, preto bod 2 leží viac vpravo.",
+      "2→3 kondenzácia (kondenzátor, pri chladení vo vonkajšej jednotke): pri stálom vysokom tlaku horúca para najprv vychladne, potom pri 45 °C skvapalnie a nakoniec sa kvapalina ešte o 5 K podchladí. Odovzdá vonkajšiemu vzduchu teplo q_k = h2 − h3, asi 311 kJ/kg – teplo z miestnosti spolu s prácou kompresora.",
+      "3→4 škrtenie (expanzný ventil): kvapalina prejde úzkym ventilom, tlak klesne z vysokého na nízky a časť kvapaliny sa hneď odparí. Entalpia sa nemení, preto je to v diagrame zvislá čiara. Teplota chladiva klesne na 5 °C, teda pod teplotu vzduchu v miestnosti.",
+      "4→1 vyparovanie (výparník, pri chladení vo vnútornej jednotke): pri stálom nízkom tlaku sa chladivo vo výparníku vyparuje a berie teplo vzduchu, ktorý cez výparník fúka ventilátor: q0 = h1 − h4, asi 247 kJ/kg. To je chladiaci účinok. Na konci sa para ešte o 5 K prehreje, aby do kompresora nešla kvapalina. Vzduch sa na studenom výparníku zároveň odvlhčí, voda odteká hadičkou ako kondenzát.",
+      "Účinnosť: pomer chladiaceho účinku a práce kompresora q0 / w je v obrázku asi 3,9 – za 1 kWh elektriny presunie jednotka asi 3,9 kWh tepla von. Je to okamžitá hodnota pri týchto teplotách, nie sezónny SEER z cenníka. Čím menší je rozdiel medzi teplotou vyparovania a kondenzácie, tým menej práce kompresor potrebuje: v horúcom dni stúpne kondenzačný tlak, kompresor robí viac práce a účinnosť aj výkon klesajú. Preto invertorová jednotka, ktorá dlho beží na nízky výkon s veľkými výmenníkmi, dosahuje vysoký SEER.",
+      "Kúrenie (tepelné čerpadlo): štvorcestný ventil otočí smer toku, vnútorná jednotka sa stane kondenzátorom a vonkajšia výparníkom. Do miestnosti ide teplo q_k = q0 + w, teda teplo z vonkajšieho vzduchu plus práca kompresora – preto je COP pri kúrení väčší ako 1. Čím je vonku chladnejšie, tým nižší je tlak vo výparníku a tým viac práce kompresor potrebuje.",
+      "Čísla v diagrame sú orientačné pre typické podmienky a chladivo R32, nie údaje konkrétneho modelu. SEER, SCOP a výkony konkrétnych setov sú v cenníkoch."
+    ]
+  },
+  "chladivovy_okruh": {
+    "title": "Chladivový okruh klimatizácie",
+    "image": "diagrams/chladivovy_okruh.svg",
+    "alt": "Schéma split klimatizácie pri chladení: vnútorná jednotka s výparníkom, vonkajšia jednotka s kompresorom, kondenzátorom a expanzným ventilom, prepojené kvapalinovým a plynovým potrubím; body 1 až 4 ako v ln p-h diagrame.",
+    "caption": "kde sa kroky cyklu dejú: vnútorná jednotka chladí, vonkajšia odvádza teplo von.",
+    "keywords": "chladivový okruh, schéma klimatizácie, ako funguje klimatizácia, kompresor, kondenzátor, výparník, expanzný ventil, potrubie medzi jednotkami, štvorcestný ventil",
+    "explanation": [
+      "Split klimatizácia má dve jednotky spojené dvoma medenými potrubiami. Chladivo v nich koluje dokola a prenáša teplo z miestnosti von (pri kúrení opačne).",
+      "Vnútorná jednotka: výparník (rebrovaný výmenník) a ventilátor. Chladivo sa vo výparníku vyparuje pri nízkej teplote a odoberá teplo vzduchu z miestnosti (krok 4→1). Vzduch sa ochladí a odvlhčí, kondenzát odteká hadičkou.",
+      "Vonkajšia jednotka: kompresor stlačí paru na vysoký tlak a teplotu (1→2), kondenzátor s ventilátorom odovzdá teplo vonkajšiemu vzduchu a para skvapalnie (2→3), expanzný ventil zníži tlak a teplotu kvapaliny (3→4). Pri invertorovej jednotke kompresor mení otáčky podľa potreby, preto beží plynulo a nie iba zapnúť a vypnúť.",
+      "Potrubie: tenšie kvapalinové a hrubšie plynové; plynové musí byť izolované. Dĺžky, trasy a montáž rieši projektový manažér pri obhliadke.",
+      "Pri kúrení štvorcestný ventil vo vonkajšej jednotke otočí smer toku: vnútorná jednotka je kondenzátor a ohrieva miestnosť, vonkajšia je výparník a berie teplo z vonkajšieho vzduchu."
+    ]
+  }
+}

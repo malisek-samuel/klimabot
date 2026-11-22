@@ -91,3 +91,23 @@ racku
 splitové
 Datart
 Datartu
+# Refrigeration terms of the diagrams and calculations (2026-11-22, the eval run of eval/scenarios/technika.json)
+studenší
+studenšia
+studenšie
+studenšieho
+studenšom
+chladivovom
+chladivovému
+chladivovým
+chladivovej
+chladivovú
+izoentropa
+izoentropy
+izoentropu
+izoentropou
+entalpie
+entalpiou
+entalpiu
+odvlhčuje
+odvlhčujú

@@ -38,6 +38,7 @@ Toto je index pravidiel, ktoré bot nájde cez `search_knowledge`. Pravidlo = `f
 ### Technické
 - [dimenzovanie-kapacity](feedback_dimenzovanie_kapacity.md) — 1 kW / 10 m². Žiadne otázky o izolácii, strope, slnečnej strane, počte ľudí
 - [multi-split-pravidla](feedback_multi_split_pravidla.md) — Max 5 izieb; kompatibilitu overí `check_compatibility` alebo `quote`
+- [diagramy-a-vypocty](feedback_diagramy_a_vypocty.md) — ln p-h diagram a schému okruhu cez `show_diagram`; záťaž, tepelná strata, spotreba v kWh, prevádzkový rozsah, BTU, rosný bod iba cez `calculate`; ponuka ďalej podľa plochy
 
 ### Produktové detaily
 - [kazety-vyzaduju-panel](feedback_kazety_potrebuju_panel.md) — Kazety nefungujú bez dekoračného panela a ovládača; rezidenčné kazety sú v multi-split radoch, kódy cez `lookup_product`

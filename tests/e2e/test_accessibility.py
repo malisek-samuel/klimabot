@@ -11,7 +11,7 @@ import axe_playwright_python
 import pytest
 from playwright.sync_api import expect
 
-from test_chat import PHONE, choose_and_consent, make_offer
+from test_chat import PHONE, ask_for_the_ln_ph_diagram, choose_and_consent, make_offer
 
 AXE_SOURCE = (Path(axe_playwright_python.__file__).parent / "axe.min.js").read_text(encoding="utf-8")
 STANDARDS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"]
@@ -38,6 +38,12 @@ def test_the_whole_sales_path_is_accessible(chat, model):
     chat.page.get_by_role("button", name="Nová konverzácia").click()
     expect(chat.page.get_by_role("dialog")).to_be_visible()
     assert_accessible(chat.page, "reset dialog")
+
+
+@pytest.mark.browser_context_args(color_scheme="dark", **STILL)
+def test_a_diagram_card_is_accessible_in_the_dark_theme(chat, model):
+    expect(ask_for_the_ln_ph_diagram(chat, model)).to_be_visible()
+    assert_accessible(chat.page, "diagram card, dark theme")
 
 
 @pytest.mark.browser_context_args(color_scheme="dark", **STILL)

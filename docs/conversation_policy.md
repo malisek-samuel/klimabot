@@ -36,6 +36,8 @@ flowchart TD
 
 **Decline wrapper.** When the latest message asks about something the company doesn't offer or the price lists don't know — instalments or leasing, photovoltaics, a technology no file mentions (Siri, HomeKit) — the move becomes `neponukame`: the one-sentence answer, then "Potom:" and the sales move the diagram would have chosen, so the conversation keeps going.
 
+**Technical wrapper** (2026-11-22). When the latest message asks for a diagram or how an AC works (`_LN_PH_ASK_RE`: ln p-h, entalpia, chladiaci cyklus; `_CIRCUIT_ASK_RE`: "ako funguje klimatizácia / tepelné čerpadlo", schéma) or for a calculation (`_CALC_ASK_RE`: chladiaca záťaž, tepelná strata, spotreba, kWh, BTU, rosný bod, prevádzkový rozsah, "pri -20"; not a price question), `_technika_move()` runs after the sales move: code shows the diagram itself (`prerun` `show_diagram`, so the picture never depends on the model) and the directive says to explain it from its `explanation` and to compute only with `calculate`. On `ponuka` / `nova-ponuka` the offer stays and the technical note is added; otherwise the move is `technika`, which ends with one sentence back to the sale (the quoted options, an offer, or the space and m²). A calculation with a number in the message, a known m² or a quote makes the first call `tool_choice: any`.
+
 | move | when | what the reply does |
 |---|---|---|
 | `bezpecnost` | danger in the latest message (`_DANGER_RE`) | safety steps first (code also prepends them), nothing sold, the company contact |
@@ -51,6 +53,7 @@ flowchart TD
 | `kontakt` | an offer exists and the customer picked one (read after the message's last change of mind, and not a wish, a condition or a size no quote has) or typed contact details | the contact request (nothing asked twice); code appends the consent question |
 | `nova-ponuka` | a cheaper / other series / other size / a code after an offer | quote it, compare with `comparison_with_earlier_quotes` |
 | `odpoved` | a question after an offer, including a comparison of two quoted offers that asks for nothing new ("o koľko je drahšia?", `_QUOTED_COMPARE_RE`) and the installation's price ("A koľko bude montáž?", `_INSTALL_PRICE_ASK_RE`) | the answer from tool results only (a comparison from the quotes already made; the installation priced by the PM after the site visit), then back to the offer |
+| `technika` | a diagram, how an AC works, or a calculation, with no offer due this turn | the diagram explained step by step (code shows it under the reply); figures only from `calculate`, its assumptions said, the load as information (the offer is sized by area); kWh, never €; then one sentence back to the sale |
 | `pokracuj` | anything else after an offer; a customer leaving or thinking it over, at any time | short, towards the choice; on leaving a goodbye and the contact, no offer and no contact request |
 
 Every sales move also lists the customer's own questions from the latest message, to answer first (`_questions_note`).

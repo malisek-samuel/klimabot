@@ -147,6 +147,30 @@ def test_a_reload_resumes_the_conversation(chat, model, server):
     assert server.visitor().turns == 2, "the reloaded tab kept its session"
 
 
+LN_PH_EXPLANATION = ("Na zvislej osi je tlak chladiva, na vodorovnej merná entalpia. Kompresor stlačí paru na vysoký tlak, "
+                     "v kondenzátore odovzdá teplo von, expanzný ventil zníži tlak a vo výparníku chladivo berie teplo z "
+                     "miestnosti. Čísla v diagrame sú orientačné.")
+
+
+def ask_for_the_ln_ph_diagram(chat, model):
+    """The customer asks for the ln p-h diagram: code shows it, the model only explains it."""
+    model.replies(LN_PH_EXPLANATION)
+    chat.send("Môžete mi poslať ln p-h diagram a vysvetliť, čo sa v klimatizácii deje?")
+    return chat.log.get_by_role("figure", name=re.compile("ln p-h diagram chladiva R32"))
+
+
+def test_a_diagram_is_shown_under_its_explanation_and_survives_a_reload(chat, model):
+    figure = ask_for_the_ln_ph_diagram(chat, model)
+    expect(chat.bot_bubbles.last).to_contain_text("merná entalpia")
+    expect(figure).to_be_visible()
+    image = figure.get_by_role("img", name=re.compile("ln p-h diagram chladiva R32"))
+    expect(image).to_have_attribute("src", "/static/diagrams/ln_ph_r32.svg")
+    chat.page.wait_for_function("img => img.complete && img.naturalWidth > 0", arg=image.element_handle())
+    expect(figure.get_by_role("link", name="Otvoriť vo väčšom")).to_have_attribute("target", "_blank")
+
+    chat.page.reload()
+    expect(chat.log.get_by_role("figure", name=re.compile("ln p-h diagram"))).to_have_count(1)
+
 def test_a_new_conversation_is_confirmed_first(chat, model, server):
     model.replies("Do akej miestnosti hľadáte klimatizáciu a koľko má m²?")
     chat.send("Dobrý deň")

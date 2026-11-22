@@ -5521,5 +5521,194 @@ class RetrievalTests(BotTest):
         self.assertIn('"best_score"', self.log_text())
 
 
+# ---------- diagrams and calculations (2026-11-22) ----------
+
+import hvac_calc  # noqa: E402
+
+
+class HvacCalcTests(unittest.TestCase):
+    """The formulas of hvac_calc.py, without the bot."""
+
+    def test_cooling_load_grows_with_the_outdoor_temperature_and_lists_what_was_assumed(self):
+        r = hvac_calc.cooling_load(25, [35, 30])
+        loads = [row["load_kW"] for row in r["by_outdoor_temp"]]
+        self.assertEqual([row["outdoor_temp_C"] for row in r["by_outdoor_temp"]], [30, 35], "sorted")
+        self.assertLess(loads[0], loads[1])
+        self.assertTrue(any("izolácia" in a for a in r["assumed"]))
+        self.assertFalse(any("vonkajšie teploty" in a for a in r["assumed"]), "the customer gave them")
+        sunny = hvac_calc.cooling_load(25, [30], sun="silne", insulation="slaba", top_floor=True)
+        self.assertGreater(sunny["by_outdoor_temp"][0]["load_kW"], loads[0])
+        self.assertIn("projektový manažér", r["note"])
+
+    def test_heating_load_is_proportional_to_the_temperature_difference(self):
+        r = hvac_calc.heating_load(20, [0, -20], indoor_temp_c=20)
+        warm, cold = sorted((row["load_kW"] for row in r["by_outdoor_temp"]))
+        self.assertAlmostEqual(cold / warm, 2, delta=0.05)
+
+    def test_energy_use_is_heat_over_seer_and_scop(self):
+        r = hvac_calc.energy_use(2.5, 2.5, seer=7.0, scop=4.6)
+        self.assertEqual(r["cooling"]["electricity_kWh"], round(2.5 * 350 / 7.0))
+        self.assertEqual(r["heating"]["electricity_kWh"], round(2.5 * 1400 / 4.6))
+        daily = hvac_calc.energy_use(2.0, seer=5, hours_per_day=8, cooling_days=90)
+        self.assertEqual(daily["cooling"]["full_load_hours"], 8 * 90 * hvac_calc.DEFAULT_LOAD_RATIO)
+        self.assertNotIn("€", json.dumps(r, ensure_ascii=False))
+
+    def test_conversions_dew_point_and_bad_input(self):
+        self.assertEqual(hvac_calc.convert(9000, "BTU")["kW"], 2.64)
+        self.assertEqual(hvac_calc.convert(3.5, "kW")["BTU_h"], 11942)
+        d = hvac_calc.dew_point(26, 60, surface_temp_c=14)
+        self.assertEqual(d["dew_point_C"], 17.6)
+        self.assertTrue(d["condensation"])
+        self.assertFalse(hvac_calc.dew_point(26, 60, surface_temp_c=20)["condensation"])
+        self.assertEqual(hvac_calc.parse_range("-27 / +15 (1f)"), (-27, 15))
+        for call in (lambda: hvac_calc.cooling_load(0), lambda: hvac_calc.cooling_load(25, insulation="výborná"),
+                     lambda: hvac_calc.energy_use(2.5), lambda: hvac_calc.convert(1, "W")):
+            with self.assertRaises(hvac_calc.CalcError):
+                call()
+
+
+class DiagramAndCalcTests(BotTest):
+    """show_diagram and calculate in the bot: the picture reaches the chat under the reply, every figure comes from a
+    tool, and the offer is still sized by sizing_policy.json (the owner, 2026-11-22)."""
+
+    def test_calculate_adds_what_only_the_catalog_knows(self):
+        load = bot.calculate("cooling_load", area_m2=25, outdoor_temps_c=[32])
+        self.assertEqual(load["offer_sizing_kW"], 25 * bot.SIZING["kw_per_m2"])
+        energy = bot.calculate("energy_use", code=AR30_SET[0])
+        self.assertEqual(energy["catalog"]["SEER"], 6.3)
+        self.assertEqual(energy["cooling"]["electricity_kWh"], round(2.6 * 350 / 6.3))
+        cold = bot.calculate("operating_range", code=AR30_SET[1], outdoor_temp_c=-20)
+        self.assertEqual((cold["mode"], cold["within_range"], cold["range_text"]), ("kúrenie", False, "-15/+24"))
+        self.assertTrue(bot.calculate("operating_range", code=AR30_SET[1], outdoor_temp_c=40)["within_range"])
+        self.assertIn("error", bot.calculate("energy_use", code="XX-NOPE"))
+        self.assertIn("error", bot.calculate("cooling_load"))
+        self.assertIn("error", bot.calculate("nieco"))
+        outdoors = [c for c, r in bot.PRODUCT_BY_CODE.items() if r["code_role"] in ("outdoor", "model")]
+        self.assertEqual([c for c in outdoors if c not in bot.OPERATING_RANGES], [], "every outdoor unit has a range")
+
+    def test_a_range_with_conditions_is_quoted_not_judged(self):
+        code = next(c for c, r in bot.OPERATING_RANGES.items() if "(" in r.get("heating", ""))
+        r = bot.calculate("operating_range", code=code, outdoor_temp_c=-25, mode="heating")
+        self.assertIsNone(r["within_range"])
+        self.assertIn("(", r["range_text"])
+
+    def test_the_policy_recognises_diagram_and_calculation_asks(self):
+        cases = {
+            "Môžete mi poslať ln p-h diagram a vysvetliť ho?": (["ln_ph"], False, False),
+            "Ako vlastne funguje klimatizácia?": (["chladivovy_okruh"], False, False),
+            "nakreslite mi schému klimatizácie": (["chladivovy_okruh"], False, False),
+            "Koľko spotrebuje za leto?": ([], True, False),
+            "Aká je chladiaca záťaž pri 35 stupňoch?": ([], True, False),
+            "Funguje to pri -20?": ([], True, False),
+            "9000 BTU je koľko kW?": ([], True, False),
+            # not technical: appliances in the room, a product photo, a price, a feature
+            "Mám v izbe veľa spotrebičov.": ([], False, False),
+            "Pošlite obrázok klimy.": ([], False, False),
+            "Koľko stojí klíma do 25 m2?": ([], False, False),
+            "Ako funguje WindFree?": ([], False, False),
+        }
+        for message, expected in cases.items():
+            self.assertEqual(bot._technical_ask(message), expected, message)
+
+    def test_a_question_about_the_diagram_on_screen_gets_no_new_picture(self):  # eval of 2026-11-22, t01
+        self.sess.diagrams_shown.add("ln_ph")
+        self.assertEqual(bot._technical_ask("A čo sa v tom diagrame zmení, keď je vonku 38 stupňov?"), ([], False, True))
+        self.assertEqual(bot._technical_ask("A máte aj schému, kde sú tie jednotky?")[0], ["chladivovy_okruh"])
+        self.assertEqual(bot._technical_ask("Pošlite mi ešte raz ten ln p-h diagram.")[0], ["ln_ph"], "asked by name")
+
+    def test_consumption_of_a_quoted_set_is_a_calculation_not_a_new_offer(self):  # eval of 2026-11-22, t04
+        message = "Koľko kWh spotrebuje tá lacnejšia za leto a koľko keď ňou budem v zime kúriť?"
+        self.assertFalse(bot._asks_new_variant_besides_calc(message))
+        self.assertTrue(bot._asks_new_variant_besides_calc("Koľko spotrebuje? A máte niečo lacnejšie?"))
+        self.sess.quotes.append(bot.quote([{"code": c} for c in AR30_SET]))
+        self.sess.user_inputs.append(message)
+        self.assertEqual(bot.next_move().name, "technika")
+
+    def test_subcooling_is_no_health_claim(self):  # eval of 2026-11-22, t01: zdravie-tvrdenie on the ln p-h steps
+        self.assertEqual(bot._health_claim_sentences(
+            "Para pri vysokom tlaku skvapalnie a kvapalina sa ešte o 5 K podchladí."), [])
+        self.assertTrue(bot._health_claim_sentences("Pri prievane sa môžete podchladiť a prechladnúť."))
+
+    def test_the_space_question_is_not_repeated_on_every_technical_answer(self):  # eval of 2026-11-22, t05
+        self.sess.conversation += [{"role": "user", "content": "Koľko kW je 9000 BTU?"},
+                                   {"role": "assistant", "content": "Je to 2,64 kW. Aký priestor chcete chladiť a koľko má m²?"},
+                                   {"role": "user", "content": "A aký je rosný bod pri 26 stupňoch a 65 %?"}]
+        self.sess.user_inputs += ["Koľko kW je 9000 BTU?", "A aký je rosný bod pri 26 stupňoch a 65 %?"]
+        move = bot.next_move()
+        self.assertEqual(move.name, "technika")
+        self.assertIn("znova nepýtaj", move.directive)
+
+    def test_the_ln_ph_diagram_is_shown_by_code_under_the_explanation(self):
+        explanation = ("Na zvislej osi je tlak chladiva, na vodorovnej merná entalpia. Kompresor stlačí paru na vysoký "
+                       "tlak, v kondenzátore odovzdá teplo von, expanzný ventil zníži tlak a vo výparníku chladivo "
+                       "berie teplo z miestnosti. Čísla v diagrame sú orientačné.\n\nAký priestor chcete chladiť a "
+                       "koľko má m²?")
+        events, shown = self.turn("Dobrý deň, môžete mi poslať ln p-h diagram a vysvetliť, čo sa v klimatizácii deje?",
+                                  resp(text(explanation)))
+        self.assertEqual(self.sess.turn_move[1].name, "technika")
+        self.assertEqual(shown, explanation, "the explanation passes the gate unchanged")
+        cards = [d for e, d in events if e == "diagram"]
+        self.assertEqual([c["key"] for c in cards], ["ln_ph"])
+        self.assertEqual(cards[0]["src"], "/static/diagrams/ln_ph_r32.svg")
+        self.assertTrue((bot.BOT_DIR / "web" / "static" / "diagrams" / "ln_ph_r32.svg").exists())
+        names = [e for e, _ in events]
+        self.assertLess(names.index("token"), names.index("diagram"), "the picture comes under the reply")
+        # The explanation went to the model as a server tool round and stays in the history as one.
+        self.assertIn("4→1 vyparovanie", bot._tool_output_text())
+        self.assertIn('"diagram_shown"', self.log_text())
+
+    def test_the_model_can_show_a_diagram_when_asked_and_a_wrong_key_is_an_error(self):
+        events, shown = self.turn(
+            "Ako funguje tepelné čerpadlo? A ukážte mi aj ln p-h diagram.",
+            resp(tool("show_diagram", diagram="neexistuje")),
+            resp(text("Vonkajšia jednotka berie teplo z vonkajšieho vzduchu a kompresor ho odovzdá do miestnosti. "
+                      "Diagram aj schéma sú pod odpoveďou.")))
+        self.assertEqual(sorted(d["key"] for e, d in events if e == "diagram"), ["chladivovy_okruh", "ln_ph"])
+        self.assertEqual([d["is_error"] for e, d in events if e == "tool_result"], [False, False, True])
+        self.assertNotIn("show_diagram", shown)
+
+    def test_diagrams_and_calculations_only_when_the_customer_asks(self):  # the owner, 2026-11-22
+        events, shown = self.turn(
+            "Dobrý deň, hľadám klimatizáciu.",
+            resp(tool("show_diagram", diagram="ln_ph"), tool("calculate", kind="convert", value=9000, unit="BTU")),
+            resp(text("Dobrý deň, aký priestor chcete chladiť a koľko má m²?")))
+        self.assertEqual([e for e, _ in events if e == "diagram"], [])
+        self.assertEqual([d["is_error"] for e, d in events if e == "tool_result"], [True, True])
+        self.assertEqual(self.sess.diagrams_shown, set())
+        self.assertIn("technical_not_asked", self.log_text())
+
+    def test_no_diagram_without_a_reply(self):
+        self.sess.turn_diagrams = ["ln_ph"]
+        events, _ = self.turn("Dobrý deň", resp(text("Dobrý deň, s čím vám pomôžem pri výbere klimatizácie?")))
+        self.assertEqual([e for e, _ in events if e == "diagram"], [], "a new turn starts with no diagram queued")
+
+    def test_a_calculation_comes_from_the_tool_and_keeps_its_kw(self):
+        r = bot.calculate("convert", value=9000, unit="BTU")
+        reply = (f"9000 BTU/h je {str(r['kW']).replace('.', ',')} kW chladiaceho výkonu.\n\n"
+                 "Aký priestor chcete chladiť a koľko má m²?")
+        events, shown = self.turn("Koľko kW je 9000 BTU?", resp(tool("calculate", kind="convert", value=9000, unit="BTU")),
+                                  resp(text(reply)))
+        self.assertEqual(self.sess.turn_move[1].tool_choice, "any", "a number in the message: the first call calculates")
+        self.assertEqual(shown, reply, "no kW sentence dropped, no regeneration")
+        self.assertEqual(bot.client.calls[0]["tool_choice"], {"type": "any"})
+
+    def test_internal_names_of_the_new_tools_are_leaks(self):
+        self.sess.user_inputs.append("Koľko spotrebuje?")
+        self.assertTrue(bot._internal_leak_sentences("Výsledok som získal cez show_diagram."))
+        self.assertTrue(bot._internal_leak_sentences("Ponuka je podľa offer_sizing_kW."))
+
+    def test_the_web_replays_diagrams_and_serves_them(self):
+        self.assertIn("diagram", web.TRANSCRIPT_EVENTS)
+        client = web.app.test_client()
+        for key in bot.DIAGRAMS:
+            r = client.get(bot._diagram_card(key)["src"])
+            self.assertEqual((r.status_code, r.mimetype), (200, "image/svg+xml"), key)
+            self.assertIn("<title", r.get_data(as_text=True))
+            r.close()
+        page = (bot.BOT_DIR / "web" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('case "diagram":', page)
+        self.assertIn('d.src.startsWith("/static/diagrams/")', page, "only the app's own pictures")
+
+
 if __name__ == "__main__":
     unittest.main()
